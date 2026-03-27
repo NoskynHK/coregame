@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <title>NEON FORTRESS ULTRA</title>
+    <style>
+        :root { --neon: #00f2ff; --bg: #050505; --tesla: #bc13fe; --nuke: #ff4757; }
+        body { margin: 0; background: var(--bg); color: white; font-family: 'Segoe UI', sans-serif; overflow: hidden; display: flex; }
+        
+        #game-container { position: relative; flex-grow: 1; display: flex; flex-direction: column; }
+        canvas { background: #000; flex-grow: 1; }
+
+        /* UI Superiore */
+        #top-bar { height: 60px; background: #111; display: flex; align-items: center; padding: 0 20px; gap: 40px; border-bottom: 2px solid #222; }
+        .bar-container { width: 200px; height: 15px; background: #222; border-radius: 10px; overflow: hidden; border: 1px solid #444; }
+        #hp-fill { width: 100%; height: 100%; background: #ff4757; transition: 0.2s; }
+        #xp-fill { width: 0%; height: 100%; background: var(--neon); transition: 0.3s; }
+
+        /* Sidebar Shop */
+        #sidebar { width: 380px; background: #111; border-left: 2px solid #222; padding: 20px; display: flex; flex-direction: column; height: 100vh; overflow-y: auto; }
+        .currency { color: #ffd700; font-size: 28px; font-weight: bold; text-align: center; margin-bottom: 20px; }
+        
+        .section-title { font-size: 14px; text-transform: uppercase; color: #666; margin: 15px 0 5px; border-bottom: 1px solid #333; }
+        .upgrade-btn { 
+            background: #1a1a1a; border: 1px solid #333; color: white; padding: 12px; margin: 4px 0;
+            border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; font-size: 13px;
+        }
+        .upgrade-btn:hover:not(:disabled) { border-color: var(--neon); background: #222; }
+        .upgrade-btn:disabled { opacity: 0.3; }
+
+        .ability-hint { font-size: 11px; color: #aaa; margin-top: 10px; padding: 10px; background: #1a1a1a; border-radius: 5px; }
+        kbd { background: #333; padding: 2px 5px; border-radius: 3px; color: var(--neon); }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="top-bar">
+        <div>CORE HP <div class="bar-container"><div id="hp-fill"></div></div></div>
+        <div>WAVE XP <div class="bar-container"><div id="xp-fill"></div></div></div>
+        <div style="font-size: 20px;">WAVE: <span id="wave-num">1</span></div>
+    </div>
+    <canvas id="ctx"></canvas>
+</div>
+
+<div id="sidebar">
+    <div class="currency">$ <span id="money">0</span></div>
+    
+    <div class="section-title">Armamenti Primari</div>
+    <button class="upgrade-btn" onclick="buy('dmg')"><span>Laser Power (Lv.<span id="l-dmg">1</span>)</span> <b id="cost-dmg">10</b></button>
+    <button class="upgrade-btn" onclick="buy('spd')"><span>Fire Rate (Lv.<span id="l-spd">1</span>)</span> <b id="cost-spd">25</b></button>
+    
+    <div class="section-title">Difese & Supporto</div>
+    <button class="upgrade-btn" onclick="buy('regen')"><span>Auto-Repair (Lv.<span id="l-regen">0</span>)</span> <b id="cost-regen">50</b></button>
+    <button class="upgrade-btn" onclick="buy('orbit')"><span>Orbital Drones</span> <b id="cost-orbit">150</b></button>
+    <button class="upgrade-btn" onclick="buy('tesla')"><span>Tesla Field</span> <b id="cost-tesla">300</b></button>
+
+    <div class="section-title">Abilità Attive</div>
+    <div class="ability-hint">
+        <kbd>1</kbd> Shockwave (50$) - Spinge via nemici<br><br>
+        <kbd>2</kbd> Emergency Heal (100$) - +20% HP<br><br>
+        <kbd>3</kbd> Mega Beam (200$) - Pulisce lo schermo
+    </div>
+
+    <div style="margin-top:auto; font-size: 10px; color: #444;">Autosave attivo ogni 5s</div>
+</div>
+
+<script>
+    const canvas = document.getElementById('ctx');
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth - 380;
+    canvas.height = window.innerHeight - 60;
+
+    let s = {
+        money: 0, wave: 1, hp: 1000, maxHp: 1000,
+        dmg: 2, fireRate: 50, regen: 0,
+        orbitals: 0, tesla: 0, xp: 0, nextXp: 100,
+        lvlDmg: 1, lvlSpd: 1, lvlRegen: 0
+    };
+
+    let costs = { dmg: 10, spd: 25, regen: 50, orbit: 150, tesla: 300 };
+    let enemies = [], particles = [], bullets = [];
+    let frame = 0;
+
+    // --- CARICAMENTO DATI ---
+    if(localStorage.getItem('fortress_save')) {
+        const save = JSON.parse(localStorage.getItem('fortress_save'));
+        s = {...s, ...save.s};
+        costs = {...costs, ...save.costs};
+    }
+
+    function buy(type) {
+        if (s.money >= costs[type]) {
+            s.money -= costs[type];
+            if(type === 'dmg') { s.dmg += 1.5; s.lvlDmg++; }
+            if(type === 'spd') { s.fireRate = Math.max(3, s.fireRate - 2); s.lvlSpd++; }
+            if(type === 'regen') { s.regen += 0.15; s.lvlRegen++; }
+            if(type === 'orbit') s.orbitals++;
+            if(type === 'tesla') s.tesla++;
+            costs[type] = Math.ceil(costs[type] * 1.6);
+            updateUI();
+        }
+    }
+
+    // --- ABILITÀ TASTIERA ---
+    window.addEventListener('keydown', e => {
+        if(e.key === '1' && s.money >= 50) { // Shockwave
+            s.money -= 50;
+            enemies.forEach(en => {
+                let ang = Math.atan2(en.y - canvas.height/2, en.x - canvas.width/2);
+                en.x += Math.cos(ang) * 200; en.y += Math.sin(ang) * 200;
+            });
+            createExplosion(canvas.width/2, canvas.height/2, '#fff', 50);
+        }
+        if(e.key === '2' && s.money >= 100) { // Heal
+            s.money -= 100; s.hp = Math.min(s.maxHp, s.hp + (s.maxHp * 0.2));
+        }
+        if(e.key === '3' && s.money >= 200) { // Mega Beam
+            s.money -= 200;
+            enemies.forEach(en => en.hp -= 100);
+            createExplosion(canvas.width/2, canvas.height/2, varColor('--neon'), 100);
+        }
+        updateUI();
+    });
+
+    function createExplosion(x, y, color, count) {
+        for(let i=0; i<count; i++) particles.push({
+            x, y, color, 
+            v: {x: (Math.random()-0.5)*15, y: (Math.random()-0.5)*15}, 
+            l: 1.0
+        });
+    }
+
+    function updateUI() {
+        document.getElementById('money').innerText = Math.floor(s.money);
+        document.getElementById('hp-fill').style.width = (s.hp / s.maxHp * 100) + "%";
+        document.getElementById('xp-fill').style.width = (s.xp / s.nextXp * 100) + "%";
+        document.getElementById('wave-num').innerText = s.wave;
+        ['dmg','spd','regen','orbit','tesla'].forEach(id => {
+            document.getElementById('cost-'+id).innerText = costs[id];
+            if(document.getElementById('l-'+id)) document.getElementById('l-'+id).innerText = s['lvl'+id.charAt(0).toUpperCase()+id.slice(1)];
+        });
+    }
+
+    function spawnEnemy() {
+        const isBoss = s.wave % 5 === 0 && enemies.filter(e => e.isBoss).length === 0;
+        const angle = Math.random() * Math.PI * 2;
+        const dist = canvas.width;
+        enemies.push({
+            x: canvas.width/2 + Math.cos(angle) * dist,
+            y: canvas.height/2 + Math.sin(angle) * dist,
+            hp: isBoss ? 200 + (s.wave * 20) : 5 + (s.wave * 2),
+            maxHp: isBoss ? 200 + (s.wave * 20) : 5 + (s.wave * 2),
+            speed: isBoss ? 0.5 : 1 + (Math.random() * 0.8),
+            isBoss: isBoss,
+            size: isBoss ? 40 : 12
+        });
+    }
+
+    function loop() {
+        ctx.fillStyle = 'rgba(5,5,5,0.25)';
+        ctx.fillRect(0,0,canvas.width, canvas.height);
+        frame++;
+
+        if(frame % Math.max(5, 40 - s.wave) === 0) spawnEnemy();
+        s.hp = Math.min(s.maxHp, s.hp + s.regen);
+
+        // Core
+        let pulse = Math.sin(frame * 0.1) * 5;
+        ctx.shadowBlur = 20; ctx.shadowColor = s.hp < 300 ? '#f00' : '#00f2ff';
+        ctx.fillStyle = ctx.shadowColor;
+        ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height/2, 25+pulse, 0, Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Enemies
+        enemies.forEach((en, i) => {
+            let ang = Math.atan2(canvas.height/2 - en.y, canvas.width/2 - en.x);
+            en.x += Math.cos(ang) * en.speed; en.y += Math.sin(ang) * en.speed;
+            
+            ctx.fillStyle = en.isBoss ? '#ff4757' : `hsl(${180 - (en.hp/en.maxHp)*100}, 100%, 50%)`;
+            ctx.fillRect(en.x - en.size, en.y - en.size, en.size*2, en.size*2);
+
+            if(Math.hypot(en.x-canvas.width/2, en.y-canvas.height/2) < 35) {
+                s.hp -= en.isBoss ? 2 : 0.5;
+                en.hp = 0;
+            }
+
+            if(en.hp <= 0) {
+                createExplosion(en.x, en.y, en.isBoss ? '#f00' : '#00f2ff', en.isBoss ? 40 : 8);
+                s.money += en.isBoss ? 100 : 2; s.xp += en.isBoss ? 100 : 10;
+                enemies.splice(i, 1);
+            }
+        });
+
+        // Weapons: Laser
+        if(frame % s.fireRate === 0 && enemies.length > 0) {
+            let target = enemies[0];
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
+            ctx.beginPath(); ctx.moveTo(canvas.width/2, canvas.height/2); ctx.lineTo(target.x, target.y); ctx.stroke();
+            target.hp -= s.dmg;
+        }
+
+        // Weapons: Tesla
+        if(s.tesla > 0 && frame % 60 === 0) {
+            ctx.strokeStyle = '#bc13fe'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height/2, 180, 0, Math.PI*2); ctx.stroke();
+            enemies.forEach(en => {
+                if(Math.hypot(en.x-canvas.width/2, en.y-canvas.height/2) < 180) en.hp -= s.tesla * 5;
+            });
+        }
+
+        // Particles
+        particles.forEach((p, i) => {
+            p.x += p.v.x; p.y += p.v.y; p.l -= 0.02;
+            ctx.globalAlpha = p.l; ctx.fillStyle = p.color;
+            ctx.fillRect(p.x, p.y, 3, 3);
+            if(p.l <= 0) particles.splice(i, 1);
+        });
+        ctx.globalAlpha = 1;
+
+        if(s.xp >= s.nextXp) { s.wave++; s.xp = 0; s.nextXp *= 1.3; updateUI(); }
+        if(s.hp <= 0) { localStorage.removeItem('fortress_save'); alert("CORE DISTRUTTO!"); location.reload(); }
+        
+        if(frame % 300 === 0) localStorage.setItem('fortress_save', JSON.stringify({s, costs}));
+
+        updateUI();
+        requestAnimationFrame(loop);
+    }
+    
+    function varColor(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+    loop();
+</script>
+</body>
+</html>
